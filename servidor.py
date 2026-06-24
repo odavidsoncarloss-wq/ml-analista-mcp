@@ -26,7 +26,15 @@ ENV_FILE   = SCRIPT_DIR / ".env"
 # (permite importar o arquivo sem o MCP, ex.: em testes ou na coleta agendada).
 try:
     from mcp.server.fastmcp import FastMCP
-    mcp = FastMCP("ML Analista")
+    # Desliga a protecao de Host (anti-DNS-rebinding) do FastMCP: como o
+    # servidor roda atras do nginx (HTTPS) e a auth e' feita pela ?key=, o
+    # Host chega como mcp.iacomdavidson.com.br e seria rejeitado (HTTP 421).
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+        _sec = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        mcp = FastMCP("ML Analista", transport_security=_sec)
+    except Exception:
+        mcp = FastMCP("ML Analista")
 except ImportError:
     class MockMCP:
         def tool(self):
