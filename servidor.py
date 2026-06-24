@@ -210,24 +210,23 @@ def _checar_modo_operacao():
 
 
 def _advertiser_id():
-    config = json.load(open(CONFIG_FILE, encoding="utf-8"))
+    # Usa o config do inquilino atual (nuvem: vem do Lovable ja com advertiser_id;
+    # local: config.json). NAO abre CONFIG_FILE direto (quebrava na nuvem).
+    config, _save = _load_tenant_config()
 
-    # FORÇA buscar advertiser_id da API (mais confiável)
+    # 1) Se ja veio no config (Lovable manda advertiser_id), usa
+    adv = config.get("advertiser_id")
+    if adv:
+        return str(adv)
+
+    # 2) Fallback: busca na API de Ads
     try:
         r = _get("/advertising/advertisers", {"product_id": "PADS"}, api_version="1")
         advs = r.get("advertisers", [])
         if advs:
-            adv = str(advs[0]["advertiser_id"])
-            config["advertiser_id"] = adv
-            json.dump(config, open(CONFIG_FILE, "w", encoding="utf-8"), indent=2)
-            return adv
+            return str(advs[0]["advertiser_id"])
     except:
         pass
-
-    # Fallback: tenta ler de config.json
-    adv = config.get("advertiser_id")
-    if adv:
-        return str(adv)
 
     raise RuntimeError("Nao foi possivel encontrar advertiser_id")
 
