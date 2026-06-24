@@ -60,9 +60,36 @@ PERIODOS = {"hoje": 0, "ontem": 1, "semanal": 6, "quinzenal": 14, "mensal": 29}
 from contextvars import ContextVar
 _tenant_config: "ContextVar" = ContextVar("tenant_config", default=None)
 
+def _key_do_request_mcp():
+    """Le a ?key= do request HTTP atual (streamable-http), de DENTRO da tool.
+    O SDK seta request_ctx na mesma task que roda a ferramenta, entao aqui
+    conseguimos o request HTTP (Starlette) e a query string com a chave."""
+    try:
+        from mcp.server.lowlevel.server import request_ctx
+        rc = request_ctx.get(None)
+        if rc is None:
+            return None
+        req = getattr(rc, "request", None)
+        qp = getattr(req, "query_params", None)
+        if qp is not None:
+            return qp.get("key")
+    except Exception:
+        pass
+    return None
+
+
 def _load_tenant_config():
     """Devolve (config_dict, save_fn) do inquilino atual ou do local."""
     src = _tenant_config.get()
+    if src is None:
+        # streamable-http: pega a chave do request MCP atual e resolve o aluno
+        _key = _key_do_request_mcp()
+        if _key:
+            try:
+                import tenant_store
+                src = tenant_store.resolve(_key)
+            except Exception:
+                src = None
     if src is None:
         src = CONFIG_FILE
     # Config em memoria (Supabase)
