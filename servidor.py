@@ -64,17 +64,26 @@ def _key_do_request_mcp():
     """Le a ?key= do request HTTP atual (streamable-http), de DENTRO da tool.
     O SDK seta request_ctx na mesma task que roda a ferramenta, entao aqui
     conseguimos o request HTTP (Starlette) e a query string com a chave."""
+    info = []
     try:
         from mcp.server.lowlevel.server import request_ctx
         rc = request_ctx.get(None)
-        if rc is None:
-            return None
-        req = getattr(rc, "request", None)
-        qp = getattr(req, "query_params", None)
-        if qp is not None:
-            return qp.get("key")
-    except Exception:
-        pass
+        info.append("rc=" + ("set" if rc else "NONE"))
+        if rc is not None:
+            req = getattr(rc, "request", "MISSING")
+            info.append("req_type=" + type(req).__name__)
+            qp = getattr(req, "query_params", None)
+            info.append("qp=" + (str(dict(qp)) if qp is not None else "NONE"))
+            if qp is not None:
+                k = qp.get("key")
+                return k
+    except Exception as e:
+        info.append("ERR=" + type(e).__name__ + ":" + str(e)[:80])
+    finally:
+        try:
+            open("/root/ml-analista-mcp/keydebug.log", "a").write(" | ".join(info) + "\n")
+        except Exception:
+            pass
     return None
 
 
