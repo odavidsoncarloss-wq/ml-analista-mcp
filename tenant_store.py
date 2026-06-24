@@ -2,11 +2,12 @@
 TENANT STORE — resolve a chave do aluno (mc_live_...) para o config dele.
 
 Dois modos (escolhido por variavel de ambiente):
-  1. SUPABASE  — se SUPABASE_URL e SUPABASE_SERVICE_KEY estiverem definidos:
-                 busca o token do aluno na tabela ml_conexoes pela coluna mcp_key.
-                 Renovacao de token escreve de volta no Supabase.
-  2. ARQUIVO   — fallback: usa tenants.json (key -> config.json local).
-                 Bom pra testar sem nuvem.
+  1. LOVABLE API — se EXTERNAL_API_KEY estiver definido:
+        chama o endpoint do app Lovable que consulta ml_conexoes server-side
+        (com a service role selada no Lovable Cloud) e ja refresca o token ML.
+        GET  {LOVABLE_API_URL}?mcp_key=...   header x-api-key: EXTERNAL_API_KEY
+        PATCH {LOVABLE_API_URL}              header x-api-key (write-back opcional)
+  2. ARQUIVO — fallback: usa tenants.json (key -> config.json local) p/ testes.
 
 Interface:
   resolve(key) -> config (dict OU Path) pronto pro servidor.py, ou None se invalida.
@@ -20,38 +21,51 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent
 TENANTS_FILE = SCRIPT_DIR / "tenants.json"
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
-ML_TABLE = os.environ.get("ML_CONEXOES_TABLE", "ml_conexoes")
-# Coluna da chave do aluno. Lovable criou como "chave_mcp" (nao "mcp_key").
-KEY_COLUMN = os.environ.get("MCP_KEY_COLUMN", "chave_mcp")
+LOVABLE_API_URL = os.environ.get(
+    "LOVABLE_API_URL", "https://analistaia.lovable.app/api/public/ml-conexoes"
+)
+EXTERNAL_API_KEY = os.environ.get("EXTERNAL_API_KEY", "")
 
 
-def _modo_supabase() -> bool:
-    return bool(SUPABASE_URL and SUPABASE_KEY)
+def _modo_lovable() -> bool:
+    return bool(EXTERNAL_API_KEY)
 
 
-# ── Modo Supabase ────────────────────────────────────────────────────────────
+# ── Modo Lovable API ─────────────────────────────────────────────────────────
 
-def _supabase_headers():
-    return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-    }
+def _extrair_linha(payload):
+    """Normaliza a resposta: aceita dict, lista [dict] ou {data: dict}."""
+    if isinstance(payload, list):
+        return payload[0] if payload else None
+    if isinstance(payload, dict):
+        if "access_token" in payload:
+            return payload
+        if isinstance(payload.get("data"), dict):
+            return payload["data"]
+        if isinstance(payload.get("data"), list):
+            return payload["data"][0] if payload["data"] else None
+    return None
 
 
-def _resolver_supabase(key: str):
-    """Busca a linha do aluno por mcp_key e devolve um config-dict com _save."""
-    url = f"{SUPABASE_URL}/rest/v1/{ML_TABLE}"
-    r = requests.get(url, headers=_supabase_headers(),
-                     params={KEY_COLUMN: f"eq.{key}", "select": "*", "limit": "1"},
-                     timeout=10)
-    if r.status_code != 200 or not r.json():
+def _resolver_lovable(key: str):
+    """Chama o endpoint do Lovable e devolve um config-dict (com _save via PATCH)."""
+    try:
+        r = requests.get(
+            LOVABLE_API_URL,
+            headers={"x-api-key": EXTERNAL_API_KEY},
+            params={"mcp_key": key},
+            timeout=15,
+        )
+    except Exception:
         return None
-    row = r.json()[0]
 
-    # Mapeia colunas da tabela -> formato que o servidor.py espera
+    if r.status_code != 200:
+        return None  # 401 (api key) / 404 (inativo) / etc -> chave invalida
+
+    row = _extrair_linha(r.json())
+    if not row or not row.get("access_token"):
+        return None
+
     config = {
         "access_token": row.get("access_token"),
         "refresh_token": row.get("refresh_token"),
@@ -60,17 +74,23 @@ def _resolver_supabase(key: str):
         "advertiser_id": str(row.get("advertiser_id") or row.get("seller_id") or ""),
     }
 
-    # Callback de renovacao: grava o token novo de volta no Supabase
+    # Write-back opcional: o endpoint do Lovable ja refresca o token sozinho,
+    # entao normalmente isto nao sera chamado. Fica como rede de seguranca.
     def _save(novo):
-        requests.patch(
-            url, headers=_supabase_headers(),
-            params={KEY_COLUMN: f"eq.{key}"},
-            json={
-                "access_token": novo.get("access_token"),
-                "refresh_token": novo.get("refresh_token"),
-                "expires_at": novo.get("expires_at"),
-            }, timeout=10,
-        )
+        try:
+            requests.patch(
+                LOVABLE_API_URL,
+                headers={"x-api-key": EXTERNAL_API_KEY},
+                json={
+                    "mcp_key": key,
+                    "access_token": novo.get("access_token"),
+                    "refresh_token": novo.get("refresh_token"),
+                    "expires_at": novo.get("expires_at"),
+                },
+                timeout=10,
+            )
+        except Exception:
+            pass
 
     config["_save"] = _save
     return config
@@ -92,13 +112,13 @@ def _resolver_arquivo(key: str):
 # ── API publica ──────────────────────────────────────────────────────────────
 
 def resolve(key: str):
-    """key do aluno -> config (dict Supabase OU Path arquivo), ou None."""
+    """key do aluno -> config (dict Lovable OU Path arquivo), ou None."""
     if not key:
         return None
-    if _modo_supabase():
-        return _resolver_supabase(key)
+    if _modo_lovable():
+        return _resolver_lovable(key)
     return _resolver_arquivo(key)
 
 
 def modo():
-    return "supabase" if _modo_supabase() else "arquivo (tenants.json)"
+    return "lovable-api" if _modo_lovable() else "arquivo (tenants.json)"
