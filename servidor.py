@@ -29,12 +29,16 @@ try:
     # Desliga a protecao de Host (anti-DNS-rebinding) do FastMCP: como o
     # servidor roda atras do nginx (HTTPS) e a auth e' feita pela ?key=, o
     # Host chega como mcp.iacomdavidson.com.br e seria rejeitado (HTTP 421).
+    # stateless_http=True: cada requisicao HTTP e' independente, entao o
+    # contextvar do inquilino (setado pelo middleware com a ?key=) chega na
+    # execucao da ferramenta. No modo stateful a tool roda em outra task e o
+    # contexto se perde (caia no config.json local inexistente).
     try:
         from mcp.server.transport_security import TransportSecuritySettings
         _sec = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-        mcp = FastMCP("ML Analista", transport_security=_sec)
+        mcp = FastMCP("ML Analista", transport_security=_sec, stateless_http=True)
     except Exception:
-        mcp = FastMCP("ML Analista")
+        mcp = FastMCP("ML Analista", stateless_http=True)
 except ImportError:
     class MockMCP:
         def tool(self):
