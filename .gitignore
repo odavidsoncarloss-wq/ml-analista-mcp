@@ -1,0 +1,17 @@
+# Segredos — NUNCA subir pra nuvem/GitHub
+config.json
+config.json.tmp
+config.json.bak*
+tenants.json
+.env
+
+# Logs e cache
+*.log
+__pycache__/
+*.pyc
+
+# Dados locais (coletas, históricos) — não precisam ir pro servidor
+faturamento_diario/
+analise_skill/
+cache_dados/
+*.bak_*
