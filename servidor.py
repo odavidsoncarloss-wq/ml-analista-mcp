@@ -94,7 +94,9 @@ def _token():
     config, _save = _load_tenant_config()
     token = config.get("access_token")
     refresh = config.get("refresh_token")
-    expires = config.get("expires_at")
+    # config.json local usa "token_expira_em"; o config vindo do Lovable usa
+    # "expires_at". Checar os dois pra a renovacao automatica funcionar nos 2.
+    expires = config.get("token_expira_em") or config.get("expires_at")
 
     if not token:
         raise RuntimeError("access_token não encontrado!")
@@ -122,8 +124,13 @@ def _token():
                         data = r.json()
                         config["access_token"] = data["access_token"]
                         config["refresh_token"] = data.get("refresh_token", refresh)
-                        config["expires_at"] = data.get("expires_in", 21600)  # 6h default
-                        _save(config)  # persiste: arquivo (local) ou Supabase (nuvem)
+                        # grava a validade como TIMESTAMP futuro (nao segundos)
+                        _seg = data.get("expires_in", 21600)
+                        _val = (datetime.now() + timedelta(seconds=_seg)).isoformat()
+                        config["token_expira_em"] = _val
+                        config["expires_at"] = _val
+                        _save(config)  # persiste: arquivo (local) ou nuvem
+                        token = config["access_token"]
                         token = config["access_token"]
                         print("[OK] Token renovado!")
                 except:
