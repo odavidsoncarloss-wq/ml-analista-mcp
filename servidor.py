@@ -224,14 +224,23 @@ def _advertiser_id():
 
 def _datas(periodo):
     hoje = datetime.now().date()
+    ontem = hoje - timedelta(days=1)
+    if periodo == "hoje":
+        return str(hoje), str(hoje)
     if periodo == "ontem":
-        d = hoje - timedelta(days=1)
-        return str(d), str(d)
+        return str(ontem), str(ontem)
     if periodo in ("mes_atual", "mes_vigente", "mês atual"):
+        # termina ontem — hoje ainda incompleto
         inicio = hoje.replace(day=1)
-        return str(inicio), str(hoje)
+        return str(inicio), str(ontem)
+    # periodo com datas livres: "2026-06-01:2026-06-15"
+    if ":" in str(periodo):
+        partes = periodo.split(":")
+        if len(partes) == 2:
+            return partes[0].strip(), partes[1].strip()
+    # periodos rolantes terminam ontem (dia de hoje incompleto)
     dias = PERIODOS.get(periodo, 6)
-    return str(hoje - timedelta(days=dias)), str(hoje)
+    return str(ontem - timedelta(days=dias - 1)), str(ontem)
 
 
 def _seller_id():
@@ -315,7 +324,7 @@ def _campanhas(periodo):
 @mcp.tool()
 def faturamento_consolidado(periodo: str = "semanal") -> str:
     """FATURAMENTO TOTAL consolidado: receita ADS + orgânico reais, gastos, ROAS global.
-    periodo: hoje | ontem | semanal | quinzenal | mensal | mes_atual"""
+    periodo: hoje | ontem | semanal | quinzenal | mensal | mes_atual | AAAA-MM-DD:AAAA-MM-DD"""
     _, resumo, di, df = _campanhas(periodo)
     if resumo is None:
         return "Erro ao consultar a API do ML. Verifique a conexão."
@@ -374,7 +383,7 @@ def faturamento_consolidado(periodo: str = "semanal") -> str:
 @mcp.tool()
 def ads_resumo(periodo: str = "semanal") -> str:
     """Resumo geral do Product Ads da conta: receita, gasto, ROAS, ACOS, CPC, vendas.
-    periodo: hoje | ontem | semanal | quinzenal | mensal | mes_atual"""
+    periodo: hoje | ontem | semanal | quinzenal | mensal | mes_atual | AAAA-MM-DD:AAAA-MM-DD"""
     _, resumo, di, df = _campanhas(periodo)
     if resumo is None:
         return "Erro ao consultar a API do ML. Verifique a conexão (conectar_ml.bat)."
