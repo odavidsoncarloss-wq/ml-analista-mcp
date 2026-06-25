@@ -227,6 +227,9 @@ def _datas(periodo):
     if periodo == "ontem":
         d = hoje - timedelta(days=1)
         return str(d), str(d)
+    if periodo in ("mes_atual", "mes_vigente", "mês atual"):
+        inicio = hoje.replace(day=1)
+        return str(inicio), str(hoje)
     dias = PERIODOS.get(periodo, 6)
     return str(hoje - timedelta(days=dias)), str(hoje)
 
@@ -262,7 +265,7 @@ def _campanhas(periodo):
 @mcp.tool()
 def faturamento_consolidado(periodo: str = "semanal") -> str:
     """FATURAMENTO TOTAL consolidado: receita ADS + orgânico, gastos, ROAS global.
-    periodo: hoje | ontem | semanal | quinzenal | mensal"""
+    periodo: hoje | ontem | semanal | quinzenal | mensal | mes_atual"""
     _, resumo, di, df = _campanhas(periodo)
     if resumo is None:
         return "Erro ao consultar a API do ML. Verifique a conexão."
@@ -310,7 +313,7 @@ def faturamento_consolidado(periodo: str = "semanal") -> str:
 @mcp.tool()
 def ads_resumo(periodo: str = "semanal") -> str:
     """Resumo geral do Product Ads da conta: receita, gasto, ROAS, ACOS, CPC, vendas.
-    periodo: hoje | ontem | semanal | quinzenal | mensal"""
+    periodo: hoje | ontem | semanal | quinzenal | mensal | mes_atual"""
     _, resumo, di, df = _campanhas(periodo)
     if resumo is None:
         return "Erro ao consultar a API do ML. Verifique a conexão (conectar_ml.bat)."
