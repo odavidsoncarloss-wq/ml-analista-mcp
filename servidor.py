@@ -234,6 +234,56 @@ def _datas(periodo):
     return str(hoje - timedelta(days=dias)), str(hoje)
 
 
+def _seller_id():
+    config, _ = _load_tenant_config()
+    sid = config.get("seller_id")
+    if sid:
+        return str(sid)
+    me = _get("/users/me")
+    if me.get("_erro"):
+        raise RuntimeError("Não foi possível obter seller_id")
+    return str(me["id"])
+
+
+def _buscar_pedidos(di: str, df: str):
+    """Busca pedidos pagos reais via /orders/search. Retorna (receita_total, unidades_total)."""
+    try:
+        seller = _seller_id()
+    except Exception as e:
+        return None, str(e)
+
+    receita = 0.0
+    unidades = 0
+    offset = 0
+
+    while True:
+        params = {
+            "seller": seller,
+            "order.date_created.from": f"{di}T00:00:00.000-0300",
+            "order.date_created.to": f"{df}T23:59:59.000-0300",
+            "order.status": "paid",
+            "limit": 50,
+            "offset": offset,
+        }
+        r = _get("/orders/search", params)
+        if r.get("_erro"):
+            return None, f"Erro API pedidos: {r.get('_msg', '')}"
+
+        resultados = r.get("results", [])
+        total_pag = int((r.get("paging") or {}).get("total") or 0)
+
+        for order in resultados:
+            receita += float(order.get("total_amount") or 0)
+            for item in (order.get("order_items") or []):
+                unidades += int(item.get("quantity") or 0)
+
+        offset += len(resultados)
+        if not resultados or offset >= total_pag:
+            break
+
+    return {"receita": round(receita, 2), "unidades": unidades}, None
+
+
 METRICAS = ("clicks,prints,cost,cpc,acos,units_quantity,total_amount,"
             "direct_units_quantity,indirect_units_quantity,direct_amount,"
             "indirect_amount,organic_units_quantity")
@@ -264,29 +314,43 @@ def _campanhas(periodo):
 
 @mcp.tool()
 def faturamento_consolidado(periodo: str = "semanal") -> str:
-    """FATURAMENTO TOTAL consolidado: receita ADS + orgânico, gastos, ROAS global.
+    """FATURAMENTO TOTAL consolidado: receita ADS + orgânico reais, gastos, ROAS global.
     periodo: hoje | ontem | semanal | quinzenal | mensal | mes_atual"""
     _, resumo, di, df = _campanhas(periodo)
     if resumo is None:
         return "Erro ao consultar a API do ML. Verifique a conexão."
 
-    # Dados de ADS
+    # Dados de ADS (100% oficiais)
     cost = float(resumo.get("cost") or 0)
     receita_ads = float(resumo.get("total_amount") or 0)
     units_ads = int(resumo.get("units_quantity") or 0)
-    units_org = int(resumo.get("organic_units_quantity") or 0)
+    units_org_ads = int(resumo.get("organic_units_quantity") or 0)
 
-    # Calcula receita orgânica estimada
-    receita_org = 0
-    if units_org > 0 and receita_ads > 0 and units_ads > 0:
-        preco_medio = receita_ads / units_ads
-        receita_org = round(preco_medio * units_org, 2)
+    # Pedidos reais via /orders/search (faturamento total oficial)
+    pedidos, erro_pedidos = _buscar_pedidos(di, df)
 
-    # Totais consolidados
-    receita_total = receita_ads + receita_org
+    if pedidos:
+        receita_total = pedidos["receita"]
+        unidades_total = pedidos["unidades"]
+        receita_org = round(max(receita_total - receita_ads, 0), 2)
+        units_org = max(unidades_total - units_ads, 0)
+        fonte = "100% oficial ML — pedidos reais + ADS API"
+        aviso = None
+    else:
+        # Fallback: estimativa se orders API falhar
+        receita_org = 0
+        if units_org_ads > 0 and receita_ads > 0 and units_ads > 0:
+            preco_medio = receita_ads / units_ads
+            receita_org = round(preco_medio * units_org_ads, 2)
+        receita_total = receita_ads + receita_org
+        unidades_total = units_ads + units_org_ads
+        units_org = units_org_ads
+        fonte = "ADS oficial + orgânico estimado (fallback)"
+        aviso = f"⚠️ Pedidos reais indisponíveis ({erro_pedidos}). Orgânico é estimativa — pode ter diferença de 15-20% do painel ML."
+
     roas_global = round(receita_total / cost, 2) if cost else 0
 
-    return json.dumps({
+    resultado = {
         "periodo": f"{di} a {df}",
         "faturamento_total": receita_total,
         "receita_ads": receita_ads,
@@ -295,19 +359,16 @@ def faturamento_consolidado(periodo: str = "semanal") -> str:
         "roas_global": roas_global,
         "unidades_ads": units_ads,
         "unidades_organicas": units_org,
-        "unidades_total": units_ads + units_org,
+        "unidades_total": unidades_total,
         "cliques": resumo.get("clicks"),
         "impressoes": resumo.get("prints"),
         "acos_pct": resumo.get("acos"),
         "cpc": resumo.get("cpc"),
-        "fonte": "API oficial ML + estimativa orgânico",
-        "aviso": (
-            "⚠️ ATENÇÃO: receita_ads e dados de ADS são 100% oficiais da API do ML. "
-            "A receita_organica é uma ESTIMATIVA (unidades orgânicas × ticket médio ADS) "
-            "— pode ter diferença de 15-20% em relação ao painel oficial. "
-            "Para faturamento exato, consulte a tela de Vendas do seu painel ML."
-        ),
-    }, ensure_ascii=False)
+        "fonte": fonte,
+    }
+    if aviso:
+        resultado["aviso"] = aviso
+    return json.dumps(resultado, ensure_ascii=False)
 
 
 @mcp.tool()
