@@ -298,6 +298,12 @@ def faturamento_consolidado(periodo: str = "semanal") -> str:
         "acos_pct": resumo.get("acos"),
         "cpc": resumo.get("cpc"),
         "fonte": "API oficial ML + estimativa orgânico",
+        "aviso": (
+            "⚠️ ATENÇÃO: receita_ads e dados de ADS são 100% oficiais da API do ML. "
+            "A receita_organica é uma ESTIMATIVA (unidades orgânicas × ticket médio ADS) "
+            "— pode ter diferença de 15-20% em relação ao painel oficial. "
+            "Para faturamento exato, consulte a tela de Vendas do seu painel ML."
+        ),
     }, ensure_ascii=False)
 
 
