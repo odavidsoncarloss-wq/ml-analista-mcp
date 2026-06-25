@@ -830,6 +830,61 @@ def monitorar_concorrente(seller_id: str) -> str:
 
 
 @mcp.tool()
+def analisar_concorrentes(termo: str, ticket_medio: float = 0, limite: int = 6) -> str:
+    """Análise COMPLETA de concorrentes em 1 comando: busca os top anúncios reais
+    do ML para o termo, descobre o vendedor de cada um e traz reputação, nível,
+    total de transações e estimativa de faturamento. Use ticket_medio (preço do produto)
+    para estimar faturamento do concorrente. Exemplo: analisar_concorrentes('lixeira inox
+    pedal 12l', ticket_medio=97.90)"""
+    busca = _get("/sites/MLB/search", {"q": termo, "limit": limite})
+    if busca.get("_erro"):
+        return json.dumps({"erro": f"Busca falhou ({busca['_erro']})"}, ensure_ascii=False)
+
+    resultados = busca.get("results") or []
+    concorrentes = []
+    sellers_vistos = set()
+
+    for item in resultados:
+        seller_info = item.get("seller") or {}
+        sid = seller_info.get("id")
+        if not sid or sid in sellers_vistos:
+            continue
+        sellers_vistos.add(sid)
+
+        u = _get(f"/users/{sid}")
+        rep = (u.get("seller_reputation") or {}) if not u.get("_erro") else {}
+        tx = rep.get("transactions") or {}
+        ratings = tx.get("ratings") or {}
+        total_tx = tx.get("total") or 0
+        fat_estimado = round(total_tx * ticket_medio, 2) if ticket_medio else None
+
+        concorrentes.append({
+            "item_id": item.get("id"),
+            "titulo": (item.get("title") or "")[:70],
+            "preco": item.get("price"),
+            "vendedor": seller_info.get("nickname") or u.get("nickname"),
+            "seller_id": sid,
+            "nivel": rep.get("level_id"),
+            "power_seller": rep.get("power_seller_status"),
+            "cadastro_desde": (u.get("registration_date") or "")[:10],
+            "transacoes_total": total_tx,
+            "transacoes_completas": tx.get("completed"),
+            "avaliacao_positiva_pct": ratings.get("positive"),
+            "faturamento_estimado": fat_estimado,
+        })
+
+    return json.dumps({
+        "termo": termo,
+        "ticket_medio_usado": ticket_medio or "não informado",
+        "total_encontrados": len(concorrentes),
+        "concorrentes": concorrentes,
+        "nota": ("faturamento_estimado = transações históricas × ticket_medio. "
+                 "Transações históricas acumulam desde a criação da conta — "
+                 "use como indicador de força, não faturamento mensal."),
+    }, ensure_ascii=False)
+
+
+@mcp.tool()
 def pesquisar_concorrentes(termo: str, limite: int = 8) -> str:
     """Inteligência de concorrência (dados públicos): busca os produtos de CATÁLOGO
     concorrentes para um termo (ex.: 'kit chave catraca soquete') e devolve os títulos
