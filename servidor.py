@@ -920,18 +920,31 @@ def relatorio_matinal() -> str:
     Use quando o usuário disser 'bom dia' ou pedir o relatório do dia."""
     _checar_modo_operacao()
     arq = SCRIPT_DIR / "relatorio_matinal_aluno.json"
-    if not arq.exists():
-        return ("Relatório ainda não gerado. Rode ativar_operacao.bat (agenda a "
-                "geração diária) ou use ads_resumo para dados ao vivo.")
-    rel = json.load(open(arq, encoding="utf-8"))
-    try:
-        idade_h = (datetime.now() - datetime.fromisoformat(rel.get("gerado_em", ""))).total_seconds() / 3600
-    except Exception:
-        idade_h = 999
-    if idade_h > 26:
-        rel["aviso"] = (f"⚠️ Relatório tem {idade_h:.0f}h — a tarefa agendada pode ter "
-                        "falhado. Considere usar ads_resumo para dados ao vivo.")
-    return json.dumps(rel, ensure_ascii=False)
+    if arq.exists():
+        rel = json.load(open(arq, encoding="utf-8"))
+        try:
+            idade_h = (datetime.now() - datetime.fromisoformat(rel.get("gerado_em", ""))).total_seconds() / 3600
+        except Exception:
+            idade_h = 999
+        if idade_h > 26:
+            rel["aviso"] = (f"⚠️ Relatório tem {idade_h:.0f}h — a tarefa agendada pode ter "
+                            "falhado. Considere usar ads_resumo para dados ao vivo.")
+        return json.dumps(rel, ensure_ascii=False)
+    fat_ontem = json.loads(faturamento_consolidado("ontem"))
+    ads_ontem = json.loads(ads_resumo("ontem"))
+    camp_ontem = json.loads(ads_campanhas("ontem"))
+    fat_7d = json.loads(faturamento_consolidado("semanal"))
+    est = json.loads(estoque_alertas())
+    return json.dumps({
+        "gerado_em": datetime.now().isoformat(),
+        "modo": "ao_vivo",
+        "nota": "Gerado ao vivo via API (sem coletor local)",
+        "faturamento_ontem": fat_ontem,
+        "ads_ontem": ads_ontem,
+        "campanhas_ontem": camp_ontem,
+        "faturamento_7d": fat_7d,
+        "estoque_alertas": est,
+    }, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -940,13 +953,21 @@ def ads_historico(semanas: int = 4) -> str:
     coletor matinal): receita, gasto, ROAS de cada coleta de 7 dias."""
     _checar_modo_operacao()
     arq = SCRIPT_DIR / "historico_aluno.json"
-    if not arq.exists():
-        return "Sem histórico ainda — ele acumula a cada relatório matinal gerado."
-    hist = json.load(open(arq, encoding="utf-8"))
-    entradas = [h for h in hist if h.get("janela") == "semanal"][-semanas:]
-    return json.dumps({"semanas": entradas,
-                       "nota": "Cada entrada = janela móvel de 7 dias na data da coleta."},
-                      ensure_ascii=False)
+    if arq.exists():
+        hist = json.load(open(arq, encoding="utf-8"))
+        entradas = [h for h in hist if h.get("janela") == "semanal"][-semanas:]
+        return json.dumps({"semanas": entradas,
+                           "nota": "Cada entrada = janela móvel de 7 dias na data da coleta."},
+                          ensure_ascii=False)
+    semanal = json.loads(ads_resumo("semanal"))
+    quinzenal = json.loads(ads_resumo("quinzenal"))
+    mensal = json.loads(ads_resumo("mensal"))
+    return json.dumps({
+        "nota": "Histórico acumulado indisponível (sem coletor local). Dados ao vivo via API.",
+        "semana_atual": semanal,
+        "quinzena_atual": quinzenal,
+        "mes_atual": mensal,
+    }, ensure_ascii=False)
 
 
 if __name__ == "__main__":
