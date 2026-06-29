@@ -1104,6 +1104,99 @@ def ads_historico(semanas: int = 4) -> str:
     }, ensure_ascii=False)
 
 
+@mcp.tool()
+def pedidos_por_estado(dias: int = 30) -> str:
+    """Agrupa pedidos pagos por estado (UF) com frete médio pago pelo vendedor.
+    Mostra quais regiões custam mais frete e quanto representam das vendas.
+    dias: quantos dias analisar (padrão 30, máximo 90). Analisa até 60 pedidos como amostra."""
+    from collections import defaultdict
+
+    dias = min(max(int(dias), 1), 90)
+    df = datetime.now().strftime("%Y-%m-%d")
+    di = (datetime.now() - timedelta(days=dias)).strftime("%Y-%m-%d")
+
+    try:
+        seller = _seller_id()
+    except Exception as e:
+        return json.dumps({"erro": str(e)})
+
+    # 1. Buscar pedidos e coletar shipping_ids (limite 60 para não sobrecarregar)
+    shipping_items = []
+    offset = 0
+    total_periodo = 0
+    while len(shipping_items) < 60:
+        params = {
+            "seller": seller,
+            "order.date_created.from": f"{di}T00:00:00.000-0300",
+            "order.date_created.to": f"{df}T23:59:59.000-0300",
+            "order.status": "paid",
+            "limit": 50,
+            "offset": offset,
+        }
+        r = _get("/orders/search", params)
+        if r.get("_erro"):
+            return json.dumps({"erro": f"Erro ao buscar pedidos: {r.get('_msg', '')}"})
+        resultados = r.get("results", [])
+        total_periodo = int((r.get("paging") or {}).get("total") or 0)
+        for order in resultados:
+            ship_id = ((order.get("shipping") or {}).get("id"))
+            if ship_id:
+                shipping_items.append({
+                    "ship_id": ship_id,
+                    "total": float(order.get("total_amount") or 0),
+                })
+            if len(shipping_items) >= 60:
+                break
+        offset += len(resultados)
+        if not resultados or offset >= total_periodo:
+            break
+
+    if not shipping_items:
+        return json.dumps({"aviso": "Nenhum pedido encontrado no período.", "periodo": f"{di} a {df}"})
+
+    # 2. Para cada envio buscar estado + custo frete via /shipments/{id}
+    estados = defaultdict(lambda: {"pedidos": 0, "receita": 0.0, "frete_total": 0.0})
+    sem_dados = 0
+    for item in shipping_items:
+        r = _get(f"/shipments/{item['ship_id']}")
+        if r.get("_erro"):
+            sem_dados += 1
+            continue
+        recv = r.get("receiver_address") or {}
+        st = recv.get("state") or {}
+        uf = st.get("name") or st.get("id") or "Desconhecido"
+        frete = float(r.get("base_cost") or r.get("cost") or 0)
+        estados[uf]["pedidos"] += 1
+        estados[uf]["receita"] += item["total"]
+        estados[uf]["frete_total"] += frete
+
+    analisados = len(shipping_items) - sem_dados
+    por_estado = []
+    for uf, d in sorted(estados.items(), key=lambda x: -x[1]["pedidos"]):
+        n = d["pedidos"]
+        por_estado.append({
+            "estado": uf,
+            "pedidos": n,
+            "pct_pedidos": round(n / analisados * 100, 1) if analisados else 0,
+            "receita_total": round(d["receita"], 2),
+            "frete_medio": round(d["frete_total"] / n, 2) if n else 0,
+            "frete_total": round(d["frete_total"], 2),
+        })
+
+    frete_medio_geral = round(
+        sum(d["frete_total"] for d in estados.values()) / analisados, 2
+    ) if analisados else 0
+
+    return json.dumps({
+        "periodo": f"{di} a {df}",
+        "total_pedidos_periodo": total_periodo,
+        "pedidos_analisados": analisados,
+        "aviso": f"Amostra de {analisados} dos {total_periodo} pedidos do período." if total_periodo > analisados else None,
+        "frete_medio_geral": frete_medio_geral,
+        "por_estado": por_estado,
+    }, ensure_ascii=False)
+
+
 if __name__ == "__main__":
     # Tentar rodar como MCP server se FastMCP estiver disponível
     try:
