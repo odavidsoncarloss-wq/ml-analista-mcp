@@ -51,6 +51,18 @@ except ImportError:
 PERIODOS = {"hoje": 0, "ontem": 1, "semanal": 6, "quinzenal": 14, "mensal": 29}
 
 
+def _agora():
+    """Timestamp da consulta — prova ao aluno que o dado é ao vivo (sem cache)."""
+    return datetime.now().strftime("%d/%m/%Y %H:%M")
+
+
+# Nota padrão para tools de ADS/faturamento: explica por que pode diferir do
+# painel do ML. Diferença estrutural (atribuição/lag), NÃO é erro de dado.
+NOTA_PAINEL = ("Pode diferir do painel do ML: o ML credita a venda pelo CLIQUE "
+               "(até 30 dias antes da compra); aqui contamos pela DATA DO PEDIDO. "
+               "Além disso, 'ontem' pode subir ao longo do dia (lag de processamento).")
+
+
 # ── Auth ────────────────────────────────────────────────────────────────────
 
 # Multi-inquilino: quando rodando como servidor HTTP, cada requisição define
@@ -387,6 +399,8 @@ def faturamento_consolidado(periodo: str = "semanal") -> str:
         "acos_pct": resumo.get("acos"),
         "cpc": resumo.get("cpc"),
         "fonte": fonte,
+        "consultado_em": _agora(),
+        "nota_painel": NOTA_PAINEL,
     }
     if aviso:
         resultado["aviso"] = aviso
@@ -417,6 +431,8 @@ def ads_resumo(periodo: str = "semanal") -> str:
         "vendas_ads": resumo.get("units_quantity"),
         "vendas_organicas": resumo.get("organic_units_quantity"),
         "fonte": "API oficial ML, consultada agora",
+        "consultado_em": _agora(),
+        "nota_painel": NOTA_PAINEL,
     }, ensure_ascii=False)
 
 
@@ -455,6 +471,8 @@ def ads_campanhas(periodo: str = "semanal") -> str:
         })
     out.sort(key=lambda x: -x["receita"])
     return json.dumps({"periodo": f"{di} a {df}", "campanhas": out,
+                       "consultado_em": _agora(),
+                       "nota_painel": NOTA_PAINEL,
                        "regra_de_ouro": "Nunca altere sem 3+ dias de dados e confirmação em janela maior."},
                       ensure_ascii=False)
 
@@ -501,7 +519,8 @@ def ads_por_anuncio(periodo: str = "semanal") -> str:
         })
     out.sort(key=lambda x: -x["receita"])
     return json.dumps({"periodo": f"{di} a {df}", "total_anuncios_promovidos": total,
-                       "anuncios": out}, ensure_ascii=False)
+                       "anuncios": out, "consultado_em": _agora(),
+                       "nota_painel": NOTA_PAINEL}, ensure_ascii=False)
 
 
 # ── 🏷️ GAVETA 2: ANÚNCIOS ───────────────────────────────────────────────────
@@ -532,7 +551,8 @@ def meus_anuncios() -> str:
             if b.get("id"):
                 out.append({"id": b["id"], "titulo": b.get("title"), "preco": b.get("price"),
                             "estoque": b.get("available_quantity"), "vendidos": b.get("sold_quantity")})
-    return json.dumps({"total": len(out), "anuncios": out}, ensure_ascii=False)
+    return json.dumps({"total": len(out), "anuncios": out,
+                       "consultado_em": _agora()}, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -709,6 +729,7 @@ def curva_abc() -> str:
         "faturamento_total_estimado": round(total, 2),
         "resumo": {"A": len(a_list), "B": len(b_list), "C": len(c_list)},
         "A_campeoes": a_list, "B_intermediarios": b_list, "C_cauda_e_zumbis": c_list,
+        "consultado_em": _agora(),
         "dica": "Proteja os A (estoque/preço), teste os B, decida pausar/diferenciar os C com 0 venda.",
     }, ensure_ascii=False)
 
@@ -1015,7 +1036,8 @@ def estoque_alertas() -> str:
             alertas.append({**a, "nivel": "CRÍTICO"})
         elif est <= 15:
             alertas.append({**a, "nivel": "baixo"})
-    return json.dumps({"alertas": alertas or "Nenhum alerta de estoque ✅"}, ensure_ascii=False)
+    return json.dumps({"alertas": alertas or "Nenhum alerta de estoque ✅",
+                       "consultado_em": _agora()}, ensure_ascii=False)
 
 
 # ── ⚙️ GAVETA 3: OPERAÇÃO (Modo Operação — chave MLO) ──────────────────────
@@ -1250,6 +1272,7 @@ def historico_campanhas(dias: int = 7) -> str:
         "periodo": f"{hoje - timedelta(days=dias-1)} a {hoje}",
         "campanhas_com_atividade": nomes_ativos,
         "serie_diaria": serie,
+        "consultado_em": _agora(),
     }, ensure_ascii=False)
 
 
@@ -1344,6 +1367,7 @@ def pedidos_por_estado(dias: int = 30) -> str:
         "aviso": f"Amostra de {analisados} dos {total_periodo} pedidos do período." if total_periodo > analisados else None,
         "frete_medio_geral": frete_medio_geral,
         "por_estado": por_estado,
+        "consultado_em": _agora(),
     }, ensure_ascii=False)
 
 
