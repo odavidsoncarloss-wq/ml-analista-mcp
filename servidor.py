@@ -9,6 +9,7 @@ Uso: configurado automaticamente pelo instalar.bat
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -170,15 +171,22 @@ def _token():
     return token
 
 
-def _get(path, params=None, api_version=None):
+def _get(path, params=None, api_version=None, _retry=2):
     h = {"Authorization": f"Bearer {_token()}"}
     if api_version:
         h["Api-Version"] = api_version
-    r = requests.get(f"https://api.mercadolibre.com{path}", headers=h,
-                     params=params or {}, timeout=30)
-    if r.status_code != 200:
+    for tentativa in range(_retry + 1):
+        r = requests.get(f"https://api.mercadolibre.com{path}", headers=h,
+                         params=params or {}, timeout=30)
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code in (429, 403) and tentativa < _retry:
+            # Rate limit ou bloqueio temporário — aguarda e tenta de novo
+            wait = 2 ** (tentativa + 1)  # 2s, 4s
+            time.sleep(wait)
+            continue
         return {"_erro": r.status_code, "_msg": r.text[:300]}
-    return r.json()
+    return {"_erro": 503, "_msg": "Esgotadas as tentativas após rate limit"}
 
 
 def _put(path, body, api_version=None):
@@ -753,6 +761,7 @@ def reclamacoes_anuncio(item_id: str, dias: int = 90) -> str:
             for c in data:
                 if c.get("resource") != "order":
                     continue
+                time.sleep(0.3)  # evita rate limit em loop de reclamações
                 o = _get(f"/orders/{c.get('resource_id')}")
                 itens = [(it.get("item") or {}).get("id") for it in (o.get("order_items") or [])]
                 if str(item_id) in itens:
@@ -831,56 +840,102 @@ def monitorar_concorrente(seller_id: str) -> str:
 
 @mcp.tool()
 def analisar_concorrentes(termo: str, ticket_medio: float = 0, limite: int = 6) -> str:
-    """Análise COMPLETA de concorrentes em 1 comando: busca os top anúncios reais
-    do ML para o termo, descobre o vendedor de cada um e traz reputação, nível,
-    total de transações e estimativa de faturamento. Use ticket_medio (preço do produto)
-    para estimar faturamento do concorrente. Exemplo: analisar_concorrentes('lixeira inox
-    pedal 12l', ticket_medio=97.90)"""
+    """Análise COMPLETA de concorrentes: busca os top anúncios do ML para o termo,
+    descobre o vendedor de cada um e traz reputação, nível, total de transações e
+    estimativa de faturamento. Tem fallback automático para catálogo se a busca principal
+    estiver indisponível. Exemplo: analisar_concorrentes('lixeira inox pedal 12l',
+    ticket_medio=97.90)"""
+
+    # ── TENTATIVA 1: busca de listings (dados de vendedor) ──────────────────
     busca = _get("/sites/MLB/search", {"q": termo, "limit": limite})
-    if busca.get("_erro"):
-        return json.dumps({"erro": f"Busca falhou ({busca['_erro']})"}, ensure_ascii=False)
+    if not busca.get("_erro"):
+        resultados = busca.get("results") or []
+        concorrentes = []
+        sellers_vistos = set()
 
-    resultados = busca.get("results") or []
-    concorrentes = []
-    sellers_vistos = set()
+        for item in resultados:
+            seller_info = item.get("seller") or {}
+            sid = seller_info.get("id")
+            if not sid or sid in sellers_vistos:
+                continue
+            sellers_vistos.add(sid)
 
-    for item in resultados:
-        seller_info = item.get("seller") or {}
-        sid = seller_info.get("id")
-        if not sid or sid in sellers_vistos:
-            continue
-        sellers_vistos.add(sid)
+            time.sleep(0.4)  # respeita rate limit: ~2 req/s por seller
+            u = _get(f"/users/{sid}")
+            rep = (u.get("seller_reputation") or {}) if not u.get("_erro") else {}
+            tx = rep.get("transactions") or {}
+            ratings = tx.get("ratings") or {}
+            total_tx = tx.get("total") or 0
+            fat_estimado = round(total_tx * ticket_medio, 2) if ticket_medio else None
 
-        u = _get(f"/users/{sid}")
-        rep = (u.get("seller_reputation") or {}) if not u.get("_erro") else {}
-        tx = rep.get("transactions") or {}
-        ratings = tx.get("ratings") or {}
-        total_tx = tx.get("total") or 0
-        fat_estimado = round(total_tx * ticket_medio, 2) if ticket_medio else None
+            concorrentes.append({
+                "item_id": item.get("id"),
+                "titulo": (item.get("title") or "")[:70],
+                "preco": item.get("price"),
+                "vendedor": seller_info.get("nickname") or u.get("nickname"),
+                "seller_id": sid,
+                "nivel": rep.get("level_id"),
+                "power_seller": rep.get("power_seller_status"),
+                "cadastro_desde": (u.get("registration_date") or "")[:10],
+                "transacoes_total": total_tx,
+                "transacoes_completas": tx.get("completed"),
+                "avaliacao_positiva_pct": ratings.get("positive"),
+                "faturamento_estimado": fat_estimado,
+            })
 
-        concorrentes.append({
-            "item_id": item.get("id"),
-            "titulo": (item.get("title") or "")[:70],
-            "preco": item.get("price"),
-            "vendedor": seller_info.get("nickname") or u.get("nickname"),
-            "seller_id": sid,
-            "nivel": rep.get("level_id"),
-            "power_seller": rep.get("power_seller_status"),
-            "cadastro_desde": (u.get("registration_date") or "")[:10],
-            "transacoes_total": total_tx,
-            "transacoes_completas": tx.get("completed"),
-            "avaliacao_positiva_pct": ratings.get("positive"),
-            "faturamento_estimado": fat_estimado,
-        })
+        return json.dumps({
+            "termo": termo,
+            "fonte": "listings ML (dados completos de vendedor)",
+            "ticket_medio_usado": ticket_medio or "não informado",
+            "total_encontrados": len(concorrentes),
+            "concorrentes": concorrentes,
+            "nota": ("faturamento_estimado = transações históricas × ticket_medio. "
+                     "Transações históricas acumulam desde a criação da conta — "
+                     "use como indicador de força, não faturamento mensal."),
+        }, ensure_ascii=False)
+
+    # ── FALLBACK: API de busca bloqueada → usa catálogo (pesquisar_concorrentes) ──
+    # Ocorre quando o ML aplica rate-limit temporário na busca de listings.
+    # O catálogo é mais estável e retorna os produtos líderes de cada categoria.
+    erro_original = busca.get("_msg", "")
+    catalogo = _get("/products/search", {"site_id": "MLB", "q": termo, "limit": limite})
+
+    if catalogo.get("_erro"):
+        # Ambas as fontes falharam — devolve mensagem clara para o aluno
+        return json.dumps({
+            "aviso": (
+                f"A API do Mercado Livre está temporariamente limitando buscas para '{termo}'. "
+                "Isso é normal e passa em alguns minutos. "
+                "O que você pode fazer agora: "
+                "(1) Aguarde 2-3 minutos e tente de novo. "
+                "(2) Use pesquisar_concorrentes('" + termo + "') — usa outra rota da API. "
+                "(3) Pesquise manualmente em mercadolivre.com.br enquanto aguarda."
+            ),
+            "alternativa_sugerida": f"pesquisar_concorrentes('{termo}')",
+        }, ensure_ascii=False)
+
+    # Catálogo disponível — retorna o que tem com nota explicativa
+    titulos = [
+        {
+            "catalog_id": p.get("id"),
+            "nome": p.get("name"),
+            "link": f"https://www.mercadolivre.com.br/p/{p.get('id')}",
+        }
+        for p in (catalogo.get("results") or [])
+        if isinstance(p, dict) and p.get("name")
+    ]
 
     return json.dumps({
         "termo": termo,
-        "ticket_medio_usado": ticket_medio or "não informado",
-        "total_encontrados": len(concorrentes),
-        "concorrentes": concorrentes,
-        "nota": ("faturamento_estimado = transações históricas × ticket_medio. "
-                 "Transações históricas acumulam desde a criação da conta — "
-                 "use como indicador de força, não faturamento mensal."),
+        "fonte": "FALLBACK — catálogo ML (busca de listings temporariamente indisponível)",
+        "aviso": (
+            "A rota de listings do ML está com rate-limit agora. "
+            "Os dados abaixo vêm do catálogo (sem dados de vendedor). "
+            "Tente analisar_concorrentes novamente em 2-3 minutos para dados completos."
+        ),
+        "produtos_líderes": titulos,
+        "total_encontrados": len(titulos),
+        "nota": "Para dados de vendedor (reputação, transações), repita o comando em alguns minutos.",
     }, ensure_ascii=False)
 
 
@@ -1105,6 +1160,69 @@ def ads_historico(semanas: int = 4) -> str:
 
 
 @mcp.tool()
+def historico_campanhas(dias: int = 7) -> str:
+    """Histórico diário de TODAS as campanhas ativas: impressões, cliques, ROAS,
+    receita, investimento, ACOS por dia. Ideal para gráficos de evolução de desempenho.
+    dias: quantos dias atrás consultar (padrão 7, máximo 14)."""
+    dias = min(max(int(dias), 1), 14)
+    hoje = datetime.now().date()
+    serie = []
+
+    for i in range(dias - 1, -1, -1):
+        data = str(hoje - timedelta(days=i))
+        time.sleep(0.5)  # evita rate limit ao consultar dia a dia
+        campanhas, _, _, _ = _campanhas(f"{data}:{data}")
+        if campanhas is None:
+            continue
+
+        dia_entry = {"data": data, "campanhas": []}
+        for c in campanhas:
+            metricas = c.get("metrics_summary") or c
+            nome = c.get("name", "—")
+            status = c.get("status", "")
+            receita = float((c.get("metrics") or {}).get("total_amount") or
+                            metricas.get("total_amount") or 0)
+            gasto = float((c.get("metrics") or {}).get("cost") or
+                          metricas.get("cost") or 0)
+            cliques = int((c.get("metrics") or {}).get("clicks") or
+                          metricas.get("clicks") or 0)
+            impressoes = int((c.get("metrics") or {}).get("prints") or
+                             metricas.get("prints") or 0)
+            vendas = int((c.get("metrics") or {}).get("units_quantity") or
+                         metricas.get("units_quantity") or 0)
+            roas = round(receita / gasto, 2) if gasto else 0
+            acos = round(gasto / receita * 100, 1) if receita else 0
+            cpc = round(gasto / cliques, 2) if cliques else 0
+
+            dia_entry["campanhas"].append({
+                "nome": nome,
+                "status": status,
+                "impressoes": impressoes,
+                "cliques": cliques,
+                "cpc": cpc,
+                "receita": round(receita, 2),
+                "gasto": round(gasto, 2),
+                "roas": roas,
+                "acos_pct": acos,
+                "vendas": vendas,
+            })
+        serie.append(dia_entry)
+
+    nomes_ativos = sorted({
+        c["nome"]
+        for d in serie
+        for c in d["campanhas"]
+        if c["gasto"] > 0 or c["impressoes"] > 0
+    })
+
+    return json.dumps({
+        "periodo": f"{hoje - timedelta(days=dias-1)} a {hoje}",
+        "campanhas_com_atividade": nomes_ativos,
+        "serie_diaria": serie,
+    }, ensure_ascii=False)
+
+
+@mcp.tool()
 def pedidos_por_estado(dias: int = 30) -> str:
     """Agrupa pedidos pagos por estado (UF) com frete médio pago pelo vendedor.
     Mostra quais regiões custam mais frete e quanto representam das vendas.
@@ -1158,6 +1276,7 @@ def pedidos_por_estado(dias: int = 30) -> str:
     estados = defaultdict(lambda: {"pedidos": 0, "receita": 0.0, "frete_total": 0.0})
     sem_dados = 0
     for item in shipping_items:
+        time.sleep(0.3)  # evita rate limit em loop de envios
         r = _get(f"/shipments/{item['ship_id']}")
         if r.get("_erro"):
             sem_dados += 1
