@@ -62,6 +62,14 @@ NOTA_PAINEL = ("Pode diferir do painel do ML: o ML credita a venda pelo CLIQUE "
                "(até 30 dias antes da compra); aqui contamos pela DATA DO PEDIDO. "
                "Além disso, 'ontem' pode subir ao longo do dia (lag de processamento).")
 
+# Mensagem única para quando a conexão ML do aluno morreu (token expirado sem
+# renovação, chave não reconhecida). O aluno se auto-resolve reconectando —
+# sem isso, o sintoma vira "dados velhos / pesquisa dá erro" sem explicação.
+ERRO_RECONECTAR = ("🔌 Sua conexão com o Mercado Livre expirou ou foi desconectada. "
+                   "Para voltar a puxar dados: entre no site do ML Analista e clique em "
+                   "'Conectar Mercado Livre' de novo. Seus dados não sumiram — só o acesso "
+                   "precisa ser renovado. Depois de reconectar, repita o comando.")
+
 
 # ── Auth ────────────────────────────────────────────────────────────────────
 
@@ -94,16 +102,23 @@ def _key_do_request_mcp():
 def _load_tenant_config():
     """Devolve (config_dict, save_fn) do inquilino atual ou do local."""
     src = _tenant_config.get()
+    key_tentada = None
     if src is None:
         # streamable-http: pega a chave do request MCP atual e resolve o aluno
         _key = _key_do_request_mcp()
         if _key:
+            key_tentada = _key
             try:
                 import tenant_store
                 src = tenant_store.resolve(_key)
             except Exception:
                 src = None
     if src is None:
+        if key_tentada:
+            # O aluno mandou uma chave, mas ela não resolveu (chave revogada ou
+            # conexão ML desconectada no site). NÃO cair no config local (que não
+            # existe na nuvem e daria "config nao encontrado") — avisar reconectar.
+            raise RuntimeError(ERRO_RECONECTAR)
         src = CONFIG_FILE
     # Config em memoria (Supabase)
     if isinstance(src, dict):
@@ -151,6 +166,7 @@ def _token():
         exp_time = datetime.fromisoformat(expires.replace('Z', '+00:00'))
         if datetime.now(exp_time.tzinfo) > exp_time:
             print("[OK] Token expirado, renovando...")
+            renovado = False
             if refresh:
                 try:
                     # Renovar token
@@ -175,10 +191,18 @@ def _token():
                         config["expires_at"] = _val
                         _save(config)  # persiste: arquivo (local) ou nuvem
                         token = config["access_token"]
-                        token = config["access_token"]
+                        renovado = True
                         print("[OK] Token renovado!")
-                except:
-                    print("[AVISO] Falha ao renovar, usando token atual...")
+                    else:
+                        print(f"[ERRO] Refresh recusado pelo ML ({r.status_code})")
+                except Exception as e:
+                    print(f"[ERRO] Falha ao renovar token: {e}")
+
+            if not renovado:
+                # NÃO retornar token velho silenciosamente — isso vira
+                # "dados desatualizados / pesquisa dá erro" sem explicação.
+                # Avisa o aluno para reconectar (ele se resolve sozinho).
+                raise RuntimeError(ERRO_RECONECTAR)
 
     return token
 
@@ -192,6 +216,9 @@ def _get(path, params=None, api_version=None, _retry=2):
                          params=params or {}, timeout=30)
         if r.status_code == 200:
             return r.json()
+        if r.status_code == 401:
+            # Token rejeitado pelo ML — conexão morta. Não adianta retry.
+            return {"_erro": 401, "_reconectar": True, "_msg": ERRO_RECONECTAR}
         if r.status_code in (429, 403) and tentativa < _retry:
             # Rate limit ou bloqueio temporário — aguarda e tenta de novo
             wait = 2 ** (tentativa + 1)  # 2s, 4s
@@ -942,11 +969,18 @@ def analisar_concorrentes(termo: str, ticket_medio: float = 0, limite: int = 6) 
                      "use como indicador de força, não faturamento mensal."),
         }, ensure_ascii=False)
 
+    # Token morto (401): não é rate-limit — é conexão do aluno. Avisar reconectar.
+    if busca.get("_reconectar"):
+        return json.dumps({"erro_conexao": ERRO_RECONECTAR}, ensure_ascii=False)
+
     # ── FALLBACK: API de busca bloqueada → usa catálogo (pesquisar_concorrentes) ──
     # Ocorre quando o ML aplica rate-limit temporário na busca de listings.
     # O catálogo é mais estável e retorna os produtos líderes de cada categoria.
     erro_original = busca.get("_msg", "")
     catalogo = _get("/products/search", {"site_id": "MLB", "q": termo, "limit": limite})
+
+    if catalogo.get("_reconectar"):
+        return json.dumps({"erro_conexao": ERRO_RECONECTAR}, ensure_ascii=False)
 
     if catalogo.get("_erro"):
         # Ambas as fontes falharam — devolve mensagem clara para o aluno
@@ -995,9 +1029,11 @@ def pesquisar_concorrentes(termo: str, limite: int = 8) -> str:
     extrair keywords REAIS dos títulos que vendem e descobrir que ficha técnica completar.
     termo: o que o cliente digitaria na busca do ML."""
     busca = _get("/products/search", {"site_id": "MLB", "q": termo, "limit": limite})
+    if busca.get("_reconectar"):
+        return json.dumps({"erro_conexao": ERRO_RECONECTAR}, ensure_ascii=False)
     if busca.get("_erro"):
         return json.dumps({"erro": f"Busca de catálogo indisponível ({busca['_erro']}). "
-                           "Use ferramentas externas de pesquisa (Metrify/Avantpro) para keywords."},
+                           "Tente de novo em alguns minutos ou pesquise manualmente no ML."},
                           ensure_ascii=False)
     titulos = [{"nome": p.get("name"), "catalog_id": p.get("id")}
                for p in (busca.get("results") or []) if isinstance(p, dict) and p.get("name")]
