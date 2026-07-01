@@ -189,15 +189,20 @@ def _get(path, params=None, api_version=None, _retry=2):
     return {"_erro": 503, "_msg": "Esgotadas as tentativas após rate limit"}
 
 
-def _put(path, body, api_version=None):
+def _put(path, body, api_version=None, _retry=1):
     h = {"Authorization": f"Bearer {_token()}", "Content-Type": "application/json"}
     if api_version:
         h["Api-Version"] = api_version
-    r = requests.put(f"https://api.mercadolibre.com{path}", headers=h,
-                     json=body, timeout=30)
-    if r.status_code not in (200, 201):
+    for tentativa in range(_retry + 1):
+        r = requests.put(f"https://api.mercadolibre.com{path}", headers=h,
+                         json=body, timeout=30)
+        if r.status_code in (200, 201):
+            return r.json()
+        if r.status_code in (429, 503) and tentativa < _retry:
+            time.sleep(3)
+            continue
         return {"_erro": r.status_code, "_msg": r.text[:300]}
-    return r.json()
+    return {"_erro": 503, "_msg": "Esgotadas as tentativas"}
 
 
 def _checar_modo_operacao():
@@ -394,7 +399,9 @@ def ads_resumo(periodo: str = "semanal") -> str:
     periodo: hoje | ontem | semanal | quinzenal | mensal | mes_atual | AAAA-MM-DD:AAAA-MM-DD"""
     _, resumo, di, df = _campanhas(periodo)
     if resumo is None:
-        return "Erro ao consultar a API do ML. Verifique a conexão (conectar_ml.bat)."
+        return json.dumps({"erro": "Não foi possível consultar a API do ML.",
+                           "dica": "Verifique se seu token está ativo. Tente novamente em 1 minuto."},
+                          ensure_ascii=False)
     cost = float(resumo.get("cost") or 0)
     total = float(resumo.get("total_amount") or 0)
     roas = round(total / cost, 2) if cost else 0
@@ -419,7 +426,9 @@ def ads_campanhas(periodo: str = "semanal") -> str:
     (ESCALAR/MANTER/REDUZIR/PAUSAR). periodo: hoje | ontem | semanal | quinzenal | mensal"""
     resultados, _, di, df = _campanhas(periodo)
     if resultados is None:
-        return "Erro ao consultar a API do ML."
+        return json.dumps({"erro": "Não foi possível consultar campanhas.",
+                           "dica": "Verifique se você tem campanhas Product Ads ativas no ML."},
+                          ensure_ascii=False)
     out = []
     for c in resultados:
         m = c.get("metrics") or {}
@@ -514,6 +523,8 @@ def meus_anuncios() -> str:
         offset += 50
     out = []
     for i in range(0, len(ids), 20):
+        if i > 0:
+            time.sleep(0.3)  # evita rate limit em contas com muitos anúncios
         lote = ",".join(ids[i:i+20])
         r = _get("/items", {"ids": lote, "attributes": "id,title,price,available_quantity,sold_quantity"})
         for item in (r if isinstance(r, list) else []):
@@ -563,7 +574,15 @@ def anuncio_buybox(item_id: str) -> str:
     e qual preço seria necessário para ganhar."""
     p = _get(f"/items/{item_id}/price_to_win", {"siteId": "MLB"})
     if p.get("_erro"):
-        return f"O anúncio {item_id} não participa de catálogo (sem buybox) ou houve erro."
+        status_code = p.get("_erro")
+        if status_code == 404:
+            return json.dumps({"item": item_id, "situacao": "not_listed",
+                               "mensagem": "Este anúncio não participa de catálogo compartilhado — sem buybox. "
+                                           "Cada seller tem o próprio anúncio independente."},
+                              ensure_ascii=False)
+        return json.dumps({"item": item_id, "erro": f"Erro ao consultar buybox ({status_code}).",
+                           "dica": "Tente novamente em alguns instantes."},
+                          ensure_ascii=False)
     return json.dumps({
         "item": item_id, "situacao": p.get("status"),
         "preco_atual": p.get("current_price"), "preco_para_ganhar": p.get("price_to_win"),
@@ -654,7 +673,7 @@ def preco_d30(item_id: str) -> str:
         "menor_preco_30d_local": hist_min,
         "dias_de_historico": dias,
         "status_historico": ("completo" if dias >= 30 else
-                             f"construindo ({dias}/30 dias) — rode o coletor matinal diariamente"),
+                             f"construindo ({dias}/30 dias — histórico local acumula com uso diário)"),
         "alerta": alerta or "Sem inconsistência detectada com os dados disponíveis.",
     }, ensure_ascii=False)
 
@@ -747,6 +766,9 @@ def reclamacoes_anuncio(item_id: str, dias: int = 90) -> str:
     É a causa nº1 de um anúncio saudável parar de vender: reclamações derrubam a
     'experiência de compra', o ML reduz a exposição e pode bloquear o Product Ads.
     As avaliações públicas (estrelas) NÃO mostram isso. item_id: MLB."""
+    dias = min(max(int(dias), 7), 180)  # aplicar limite real: mínimo 7, máximo 180 dias
+    data_corte = (datetime.now() - timedelta(days=dias)).strftime("%Y-%m-%d")
+
     achados = []
     for status in ("opened", "closed"):
         offset = 0
@@ -758,9 +780,14 @@ def reclamacoes_anuncio(item_id: str, dias: int = 90) -> str:
             data = r.get("data", [])
             if not data:
                 break
+            # Para ao encontrar claims mais antigos que o corte
+            mais_antigo = (data[-1].get("date_created") or "")[:10]
             for c in data:
                 if c.get("resource") != "order":
                     continue
+                data_claim = (c.get("date_created") or "")[:10]
+                if data_claim < data_corte:
+                    continue  # fora da janela de datas
                 time.sleep(0.3)  # evita rate limit em loop de reclamações
                 o = _get(f"/orders/{c.get('resource_id')}")
                 itens = [(it.get("item") or {}).get("id") for it in (o.get("order_items") or [])]
@@ -998,14 +1025,18 @@ REGRA_OURO = ("Regra de Ouro: nunca altere sem 3+ dias de dados após a última 
 
 
 def _campanha_atual(campaign_id):
-    # o endpoint de campanha individual não existe na API oficial (404);
-    # busca na listagem, que cobre todas as campanhas da conta
+    # Endpoint de campanha individual não existe (404) — busca na listagem.
+    # Tenta "ontem" primeiro; se campanha nova ou sem atividade ontem, tenta "semanal".
     adv = _advertiser_id()
-    resultados, _, _, _ = _campanhas("ontem")
-    for c in resultados or []:
-        if str(c.get("id")) == str(campaign_id):
-            return adv, c
-    raise RuntimeError(f"Campanha {campaign_id} não encontrada na conta.")
+    for periodo in ("ontem", "semanal"):
+        resultados, _, _, _ = _campanhas(periodo)
+        for c in resultados or []:
+            if str(c.get("id")) == str(campaign_id):
+                return adv, c
+    raise RuntimeError(
+        f"Campanha {campaign_id} não encontrada. "
+        "Verifique o ID em ads_campanhas() ou se a campanha ainda existe na conta."
+    )
 
 
 PASSO_A_PASSO_PAINEL = (
@@ -1164,7 +1195,7 @@ def historico_campanhas(dias: int = 7) -> str:
     """Histórico diário de TODAS as campanhas ativas: impressões, cliques, ROAS,
     receita, investimento, ACOS por dia. Ideal para gráficos de evolução de desempenho.
     dias: quantos dias atrás consultar (padrão 7, máximo 14)."""
-    dias = min(max(int(dias), 1), 14)
+    dias = min(max(int(dias), 1), 7)  # máximo 7 dias para evitar timeout no Claude Desktop
     hoje = datetime.now().date()
     serie = []
 
