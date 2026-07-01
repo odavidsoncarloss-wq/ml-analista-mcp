@@ -1061,6 +1061,76 @@ def pesquisar_concorrentes(termo: str, limite: int = 8) -> str:
     }, ensure_ascii=False)
 
 
+# Prompts prontos de extração (Bloco 2 e 3 do Kit de Pesquisa). Ficam como
+# constantes para o aluno copiar e colar no Claude in Chrome, na página certa.
+PROMPT_AVANTPRO = (
+    "Você está numa página de produto do Mercado Livre com a extensão Avantpro ativa. "
+    "Leia a tela (get_page_text + screenshot) e devolva SÓ estes dados, em lista. "
+    "Se algum não estiver visível, escreva 'não visível' — NÃO invente número.\n"
+    "DADOS DO PRODUTO: Nome | Catálogo (MLBxxxx) | Marca | Preço atual (buybox) | "
+    "Preço 'de'/desconto | Parcelamento | Frete grátis? Full? | Avaliação e nº de reviews.\n"
+    "VENDEDOR: quem ganha o buybox | nº de vendedores no anúncio | reputação (verde/amarelo/vermelho).\n"
+    "AVANTPRO (o principal): vendas 24h/dia | vendas 7 dias | vendas 30 dias | "
+    "faturamento estimado 30 dias | ritmo (un/dia) | tendência (subindo/estável/caindo) | "
+    "ranking na categoria | data de criação do anúncio (idade)."
+)
+
+PROMPT_SHOPPING = (
+    "Você está numa busca de shopping de preços (Google Shopping/Buscapé/Zoom). "
+    "Leia a tela e devolva SÓ estes dados, em lista. Não invente:\n"
+    "Produto buscado | Menor preço + loja | Maior preço + loja | Preço médio de mercado | "
+    "Nº de lojas/ofertas | O preço do Mercado Livre está acima ou abaixo do mercado?"
+)
+
+
+@mcp.tool()
+def pesquisa_de_mercado(termo: str, ticket_medio: float = 0) -> str:
+    """PESQUISA DE MERCADO COMPLETA em 1 comando (Kit de Pesquisa). Roda a busca na API
+    do ML (concorrentes + categoria + ficha do líder) E JÁ DEVOLVE os prompts prontos
+    para o aluno colar no Claude in Chrome e coletar o volume de vendas (Avantpro) e o
+    preço de mercado (shopping de preços). No fim, o aluno cola tudo de volta e você monta
+    o dashboard. termo: o que o cliente digitaria no ML. ticket_medio: preço estimado."""
+    # BLOCO 1 — dados da API (reaproveita as tools existentes)
+    catalogo = json.loads(pesquisar_concorrentes(termo, limite=8))
+    if catalogo.get("erro_conexao"):
+        return json.dumps({"erro_conexao": ERRO_RECONECTAR}, ensure_ascii=False)
+    vendedores = json.loads(analisar_concorrentes(termo, ticket_medio=ticket_medio, limite=6))
+
+    # Top catálogos para o aluno abrir no Chrome (Bloco 2)
+    titulos = catalogo.get("titulos_concorrentes") or []
+    top_links = [
+        {"nome": t.get("nome"), "catalog_id": t.get("catalog_id"),
+         "link": f"https://www.mercadolivre.com.br/p/{t.get('catalog_id')}"}
+        for t in titulos[:3] if t.get("catalog_id")
+    ]
+
+    return json.dumps({
+        "termo": termo,
+        "consultado_em": _agora(),
+        "PASSO_1_dados_da_api": {
+            "categoria": catalogo.get("categoria_prevista"),
+            "concorrentes_catalogo": titulos,
+            "ficha_do_lider": catalogo.get("atributos_do_lider"),
+            "vendedores": vendedores.get("concorrentes") or vendedores.get("produtos_líderes"),
+        },
+        "PASSO_2_avantpro": {
+            "instrucao": ("Abra no Chrome (Claude in Chrome ativo) a página de cada "
+                          "concorrente forte abaixo, com o Avantpro habilitado, e cole o prompt."),
+            "paginas_para_abrir": top_links,
+            "prompt_para_colar": PROMPT_AVANTPRO,
+        },
+        "PASSO_3_shopping": {
+            "instrucao": "Abra o Google Shopping (ou Buscapé/Zoom), busque o produto e cole o prompt.",
+            "prompt_para_colar": PROMPT_SHOPPING,
+        },
+        "PASSO_4_dashboard": ("Cole aqui tudo que o Avantpro e o shopping devolverem + informe o "
+                              "custo do fornecedor e o preço-alvo. O Claude monta o dashboard "
+                              "esmiuçado com volume, concorrentes, preço, margem e veredicto."),
+        "nota": ("A API não expõe volume de vendas real — por isso o passo 2 (Avantpro) é "
+                 "essencial. Nunca estime: se uma fonte faltar, marque 'não coletado'."),
+    }, ensure_ascii=False)
+
+
 @mcp.tool()
 def estoque_alertas() -> str:
     """Anúncios ativos com estoque crítico (≤5 un.) ou baixo (≤15 un.)."""
