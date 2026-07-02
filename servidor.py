@@ -1114,6 +1114,12 @@ def pesquisa_de_mercado(termo: str, ticket_medio: float = 0) -> str:
     ]
 
     return json.dumps({
+        "INSTRUCAO_PARA_O_ASSISTENTE": (
+            "IMPORTANTE: apresente o PASSO 1 ao usuário e entregue os links e prompts dos "
+            "passos 2 e 3 PARA O USUÁRIO ABRIR MANUALMENTE. NÃO navegue você mesmo, NÃO use "
+            "browser/WebFetch, NÃO tente abrir as páginas — quem abre é o usuário, no Chrome "
+            "dele, onde a extensão Avantpro está instalada. Depois de mostrar os passos, PARE "
+            "e aguarde o usuário colar os dados coletados."),
         "termo": termo,
         "consultado_em": _agora(),
         "PASSO_1_dados_da_api": {
@@ -1123,18 +1129,23 @@ def pesquisa_de_mercado(termo: str, ticket_medio: float = 0) -> str:
             "vendedores": vendedores.get("concorrentes") or vendedores.get("produtos_líderes"),
         },
         "PASSO_2_avantpro": {
-            "instrucao": ("Abra no Chrome (Claude in Chrome ativo) a página de cada "
-                          "concorrente forte abaixo, com o Avantpro habilitado, e cole o prompt."),
+            "quem_faz": "O USUÁRIO (manualmente) — o assistente NÃO deve navegar",
+            "instrucao": ("Usuário: abra no SEU Chrome a página de cada concorrente abaixo "
+                          "(com o Avantpro habilitado) e cole o prompt na conversa do "
+                          "Claude in Chrome."),
             "paginas_para_abrir": top_links,
             "prompt_para_colar": PROMPT_AVANTPRO,
         },
         "PASSO_3_shopping": {
-            "instrucao": "Abra o Google Shopping (ou Buscapé/Zoom), busque o produto e cole o prompt.",
+            "quem_faz": "O USUÁRIO (manualmente) — o assistente NÃO deve navegar",
+            "instrucao": ("Usuário: abra o Google Shopping (ou Buscapé/Zoom), busque o "
+                          "produto e cole o prompt."),
             "prompt_para_colar": PROMPT_SHOPPING,
         },
-        "PASSO_4_dashboard": ("Cole aqui tudo que o Avantpro e o shopping devolverem + informe o "
-                              "custo do fornecedor e o preço-alvo. O Claude monta o dashboard "
-                              "esmiuçado com volume, concorrentes, preço, margem e veredicto."),
+        "PASSO_4_dashboard": ("Quando o usuário colar aqui o que o Avantpro e o shopping "
+                              "devolveram + custo do fornecedor e preço-alvo, aí sim o "
+                              "assistente monta o dashboard esmiuçado com volume, "
+                              "concorrentes, preço, margem e veredicto."),
         "nota": ("A API não expõe volume de vendas real — por isso o passo 2 (Avantpro) é "
                  "essencial. Nunca estime: se uma fonte faltar, marque 'não coletado'."),
     }, ensure_ascii=False)
