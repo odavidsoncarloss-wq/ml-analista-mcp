@@ -51,9 +51,18 @@ except ImportError:
 PERIODOS = {"hoje": 0, "ontem": 1, "semanal": 6, "quinzenal": 14, "mensal": 29}
 
 
+def _agora_brasilia():
+    """datetime atual em HORÁRIO DE BRASÍLIA. A VPS roda em UTC (3h à frente);
+    sem esta conversão, depois das 21h no Brasil o servidor já está no dia
+    seguinte — o carimbo parecia 'data de amanhã' e períodos como 'ontem'
+    calculavam o dia ERRADO."""
+    from datetime import timezone
+    return datetime.now(timezone.utc) - timedelta(hours=3)
+
+
 def _agora():
-    """Timestamp da consulta — prova ao aluno que o dado é ao vivo (sem cache)."""
-    return datetime.now().strftime("%d/%m/%Y %H:%M")
+    """Timestamp da consulta (Brasília) — prova ao aluno que o dado é ao vivo."""
+    return _agora_brasilia().strftime("%d/%m/%Y %H:%M") + " (Brasília)"
 
 
 # Nota padrão para tools de ADS/faturamento: explica por que pode diferir do
@@ -275,7 +284,7 @@ def _advertiser_id():
 
 
 def _datas(periodo):
-    hoje = datetime.now().date()
+    hoje = _agora_brasilia().date()
     ontem = hoje - timedelta(days=1)
     if periodo == "hoje":
         return str(hoje), str(hoje)
@@ -1324,7 +1333,7 @@ def historico_campanhas(dias: int = 7) -> str:
     receita, investimento, ACOS por dia. Ideal para gráficos de evolução de desempenho.
     dias: quantos dias atrás consultar (padrão 7, máximo 14)."""
     dias = min(max(int(dias), 1), 7)  # máximo 7 dias para evitar timeout no Claude Desktop
-    hoje = datetime.now().date()
+    hoje = _agora_brasilia().date()
     serie = []
 
     for i in range(dias - 1, -1, -1):
@@ -1390,8 +1399,8 @@ def pedidos_por_estado(dias: int = 30) -> str:
     from collections import defaultdict
 
     dias = min(max(int(dias), 1), 90)
-    df = datetime.now().strftime("%Y-%m-%d")
-    di = (datetime.now() - timedelta(days=dias)).strftime("%Y-%m-%d")
+    df = _agora_brasilia().strftime("%Y-%m-%d")
+    di = (_agora_brasilia() - timedelta(days=dias)).strftime("%Y-%m-%d")
 
     try:
         seller = _seller_id()
