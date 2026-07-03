@@ -1073,8 +1073,10 @@ def pesquisar_concorrentes(termo: str, limite: int = 8) -> str:
 # Prompts prontos de extração (Bloco 2 e 3 do Kit de Pesquisa). Ficam como
 # constantes para o aluno copiar e colar no Claude in Chrome, na página certa.
 PROMPT_AVANTPRO = (
-    "Você está numa página de produto do Mercado Livre com a extensão Avantpro ativa. "
-    "Leia a tela (get_page_text + screenshot) e devolva SÓ estes dados, em lista. "
+    "A página do produto JÁ ESTÁ ABERTA nesta aba — NÃO navegue, NÃO pesquise, NÃO "
+    "abra outras páginas. Leia SOMENTE a aba atual (get_page_text + screenshot). "
+    "É uma página de produto do Mercado Livre com a extensão Avantpro ativa. "
+    "Devolva SÓ estes dados, em lista. "
     "Se algum não estiver visível, escreva 'não visível' — NÃO invente número.\n"
     "DADOS DO PRODUTO: Nome | Catálogo (MLBxxxx) | Marca | Preço atual (buybox) | "
     "Preço 'de'/desconto | Parcelamento | Frete grátis? Full? | Avaliação e nº de reviews.\n"
@@ -1085,8 +1087,10 @@ PROMPT_AVANTPRO = (
 )
 
 PROMPT_SHOPPING = (
-    "Você está numa busca de shopping de preços (Google Shopping/Buscapé/Zoom). "
-    "Leia a tela e devolva SÓ estes dados, em lista. Não invente:\n"
+    "A busca JÁ ESTÁ ABERTA nesta aba — NÃO navegue, NÃO refaça a pesquisa, NÃO abra "
+    "outras páginas. Role a página se precisar e leia SOMENTE a aba atual. "
+    "É uma busca de shopping de preços (Google Shopping/Buscapé/Zoom). "
+    "Devolva SÓ estes dados, em lista. Não invente:\n"
     "Produto buscado | Menor preço + loja | Maior preço + loja | Preço médio de mercado | "
     "Nº de lojas/ofertas | O preço do Mercado Livre está acima ou abaixo do mercado?"
 )
