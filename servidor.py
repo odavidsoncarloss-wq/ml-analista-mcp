@@ -362,7 +362,9 @@ METRICAS = ("clicks,prints,cost,cpc,acos,units_quantity,total_amount,"
 def _campanhas(periodo):
     adv = _advertiser_id()
     di, df = _datas(periodo)
-    base = f"/advertising/advertisers/{adv}/product_ads/campaigns"
+    # API nova do ML (endpoints antigos /advertising/... foram descontinuados em
+    # 26/02/2026 e retornam 404). Agora é /marketplace/advertising/{site}/... /search.
+    base = f"/marketplace/advertising/MLB/advertisers/{adv}/product_ads/campaigns/search"
     params = {"limit": 50, "offset": 0, "date_from": di, "date_to": df,
               "metrics": METRICAS, "metrics_summary": "true"}
     r = _get(base, params, api_version="2")
@@ -519,7 +521,8 @@ def ads_por_anuncio(periodo: str = "semanal") -> str:
     campanha e qual só gasta). periodo: hoje | ontem | semanal | quinzenal | mensal"""
     adv = _advertiser_id()
     di, df = _datas(periodo)
-    base = f"/advertising/advertisers/{adv}/product_ads/items"
+    # API nova: /product_ads/items virou /product_ads/ads/search (marketplace).
+    base = f"/marketplace/advertising/MLB/advertisers/{adv}/product_ads/ads/search"
     params = {"limit": 50, "offset": 0, "date_from": di, "date_to": df,
               "metrics": METRICAS}
     r = _get(base, params, api_version="2")
